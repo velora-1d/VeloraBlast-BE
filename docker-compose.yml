@@ -2,7 +2,7 @@ version: '3.3'
 
 services:
   evolution-api:
-    container_name: evolution_api
+    container_name: evolution-api
     image: atendai/evolution-api:latest
     restart: always
     ports:
@@ -14,6 +14,7 @@ services:
       - AUTHENTICATION_API_KEY=velora123
       - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
       - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://evolution:evolution@postgres:5432/evolution
       - DATABASE_CLIENT_NAME=evolution_exchange
       - RABBITMQ_ENABLED=false
