@@ -21,6 +21,8 @@ class User(Base):
     leads = relationship("Lead", back_populates="owner")
     templates = relationship("Template", back_populates="owner")
     transactions = relationship("MidtransTransaction", back_populates="owner")
+    scraping_jobs = relationship("ScrapingJob", back_populates="owner")
+    broadcast_campaigns = relationship("BroadcastCampaign", back_populates="owner")
 
 class Lead(Base):
     __tablename__ = "leads"
@@ -72,3 +74,50 @@ class Package(Base):
     duration_days = Column(Integer, default=30)  # Durasi langganan dalam hari
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class ScrapingJob(Base):
+    __tablename__ = "scraping_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+    keyword = Column(String)
+    limit = Column(Integer, default=50)
+    status = Column(String, default="pending") # pending, running, completed, failed, stopped
+    result_file_path = Column(String, nullable=True)
+    log_file_path = Column(String, nullable=True)
+    total_results = Column(Integer, default=0)
+    pid = Column(Integer, nullable=True) # Store Process ID for kill switch
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    owner = relationship("User", back_populates="scraping_jobs")
+
+class BroadcastCampaign(Base):
+    __tablename__ = "broadcast_campaigns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+    name = Column(String, default="Untitled Campaign")
+    template_body = Column(Text)
+    target_type = Column(String) # all, verified
+    session_used = Column(String, nullable=True)
+    status = Column(String, default="pending") # pending, running, paused, completed, stopped
+    total_recipients = Column(Integer, default=0)
+    success_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    owner = relationship("User", back_populates="broadcast_campaigns")
+    logs = relationship("BroadcastLog", back_populates="campaign", cascade="all, delete-orphan")
+
+class BroadcastLog(Base):
+    __tablename__ = "broadcast_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("broadcast_campaigns.id"))
+    phone = Column(String, index=True)
+    name = Column(String, nullable=True)
+    status = Column(String) # sent, failed, skipped
+    error_message = Column(Text, nullable=True)
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    
+    campaign = relationship("BroadcastCampaign", back_populates="logs")

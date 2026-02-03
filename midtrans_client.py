@@ -4,8 +4,8 @@ import hashlib
 import hmac
 import os
 
-MIDTRANS_SERVER_KEY = os.getenv("MIDTRANS_SERVER_KEY", "SB-Mid-server-YOUR_SERVER_KEY")
-MIDTRANS_CLIENT_KEY = os.getenv("MIDTRANS_CLIENT_KEY", "SB-Mid-client-YOUR_CLIENT_KEY")
+MIDTRANS_SERVER_KEY = os.getenv("MIDTRANS_SERVER_KEY")
+MIDTRANS_CLIENT_KEY = os.getenv("MIDTRANS_CLIENT_KEY")
 IS_PRODUCTION = os.getenv("MIDTRANS_IS_PRODUCTION", "false").lower() == "true"
 
 BASE_URL = "https://app.midtrans.com/snap/v1" if IS_PRODUCTION else "https://app.sandbox.midtrans.com/snap/v1"

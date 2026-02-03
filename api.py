@@ -4,13 +4,16 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 import models, schemas, auth, database, midtrans_client
 from database import engine, get_db
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 models.Base.metadata.create_all(bind=engine)
 
 from pydantic import BaseModel
 import subprocess
 import json
-import os
 import signal
 import psutil
 from typing import Optional, List
@@ -68,11 +71,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 CONFIG_FILE = "env_parameters.json"
-LOG_FILE = "log_no_api.log"
 SCRAPER_SCRIPT = "script_no_api.py"
 
-# Global variable to store the process ID
-scraper_process = None
+# active_scrapers = {} # DEPRECATED: Moved to Database
 
 class ConfigModel(BaseModel):
     # API Key is now optional/unused
@@ -84,29 +85,33 @@ class ConfigModel(BaseModel):
     WHATSAPP_PHONE_NUMBER: Optional[str] = ""
     APPOINTMENT_DATE: str
     APPOINTMENT_TIME: str
-    CHROME_DRIVER_PATH: str = "/usr/bin/chromedriver"
-    CHROME_USER_DATA_DIR: str = "/home/mahinutsmannawawi/.config/google-chrome"
-    CHROME_PROFILE_NAME: str = "Default"
+    CHROME_DRIVER_PATH: str = os.getenv("CHROME_DRIVER_PATH", "/usr/bin/chromedriver")
+    CHROME_USER_DATA_DIR: str = os.getenv("CHROME_USER_DATA_DIR", "/home/mahinutsmannawawi/.config/google-chrome")
+    CHROME_PROFILE_NAME: str = os.getenv("CHROME_PROFILE_NAME", "Default")
     country_code_file: str = "country_codes.csv"
     message_file: str = "prep_message.txt"
     # Telegram Config
-    TELEGRAM_BOT_TOKEN: Optional[str] = ""
     TELEGRAM_CHAT_ID: Optional[str] = ""
     TELEGRAM_CHAT_ID_NOTIF: Optional[str] = ""
-    WAHA_API_URL: Optional[str] = "http://localhost:3000"
 
 # --- Telegram Business Notification Helper ---
 def send_business_notification(message: str):
     """Send notification to Blast Notif Telegram group"""
     try:
-        if os.path.exists(CONFIG_FILE):
+        # Prioritize Environment Variables
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID_NOTIF")
+        
+        # Fallback to config file
+        if (not bot_token or not chat_id) and os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
                 config = json.load(f)
-            bot_token = config.get("TELEGRAM_BOT_TOKEN", "")
-            chat_id = config.get("TELEGRAM_CHAT_ID_NOTIF", "")
-            if bot_token and chat_id:
-                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"})
+            bot_token = bot_token or config.get("TELEGRAM_BOT_TOKEN", "")
+            chat_id = chat_id or config.get("TELEGRAM_CHAT_ID_NOTIF", "")
+            
+        if bot_token and chat_id:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=10)
     except Exception as e:
         print(f"⚠️ Telegram notification error: {e}")
 
@@ -124,56 +129,133 @@ def update_config(config: ConfigModel):
     return {"message": "Config updated successfully"}
 
 @app.post("/start")
-def start_scraper(background_tasks: BackgroundTasks):
-    global scraper_process
+def start_scraper(background_tasks: BackgroundTasks, current_user: models.User = Depends(get_current_user)):
+    global active_scrapers
     
-    # Check if already running
-    if scraper_process and scraper_process.poll() is None:
-        return {"status": "error", "message": "Scraper is already running"}
+    user_id = current_user.id
+    
+    # Check if already running for this user
+@app.post("/start")
+def start_scraper(background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    user_id = current_user.id
+    
+    # Check if already running in DB
+    existing_job = db.query(models.ScrapingJob).filter(
+        models.ScrapingJob.owner_id == user_id,
+        models.ScrapingJob.status == "running"
+    ).first()
+    
+    if existing_job:
+        # Verify if process is actually alive
+        if psutil.pid_exists(existing_job.pid):
+            return {"status": "error", "message": "Scraper is already running (Job ID: " + str(existing_job.id) + ")"}
+        else:
+            # Zombie record, mark as failed
+            existing_job.status = "failed"
+            db.commit()
 
-    # Run the script
+    # Read config for metadata
+    keyword = "Unknown"
+    limit = 50
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                cfg = json.load(f)
+                keyword = cfg.get("search_phrase", "Unknown")
+                limit = cfg.get("max_results", 50)
+        except: pass
+
+    # Define user-specific paths
+    log_file = f"logs/scraper_{user_id}.log"
+    output_dir = f"results/{user_id}"
+    
+    # Ensure log directory exists
+    os.makedirs("logs", exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Run the script with arguments
     try:
-        # We run it as a subprocess
-        scraper_process = subprocess.Popen(
-            ["python3", SCRAPER_SCRIPT],
+        cmd = ["python3", SCRAPER_SCRIPT, "--owner_id", str(user_id), "--log_file", log_file, "--output_dir", output_dir]
+        
+        proc = subprocess.Popen(
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
-        return {"status": "success", "message": "Scraper started", "pid": scraper_process.pid}
+        
+        # Create Job in DB
+        new_job = models.ScrapingJob(
+            owner_id=user_id,
+            keyword=keyword,
+            limit=limit,
+            status="running",
+            pid=proc.pid,
+            log_file_path=log_file,
+            result_file_path=output_dir
+        )
+        db.add(new_job)
+        db.commit()
+        
+        return {"status": "success", "message": "Scraper started", "pid": proc.pid, "job_id": new_job.id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stop")
-def stop_scraper():
-    global scraper_process
-    print(f"Stopping process: {scraper_process}")
+@app.post("/stop")
+def stop_scraper(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    user_id = current_user.id
     
-    if scraper_process and scraper_process.poll() is None:
+    # Find running job
+    job = db.query(models.ScrapingJob).filter(
+        models.ScrapingJob.owner_id == user_id,
+        models.ScrapingJob.status == "running"
+    ).first()
+    
+    if job and job.pid:
         try:
-            # Kill the process tree (including chromedriver)
-            parent = psutil.Process(scraper_process.pid)
-            for child in parent.children(recursive=True):
-                child.terminate()
-            parent.terminate()
-            scraper_process = None
+            if psutil.pid_exists(job.pid):
+                parent = psutil.Process(job.pid)
+                for child in parent.children(recursive=True):
+                    child.terminate()
+                parent.terminate()
+            
+            job.status = "stopped"
+            db.commit()
             return {"status": "success", "message": "Scraper stopped"}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    return {"status": "error", "message": "Scraper is not running"}
+            job.status = "error" # Mark error but consider stopped
+            db.commit()
+            return {"status": "error", "message": f"Error stopping: {str(e)}"}
+            
+    return {"status": "error", "message": "No scraper running"}
 
 @app.get("/status")
-def get_status():
-    global scraper_process
-    if scraper_process and scraper_process.poll() is None:
-        return {"status": "running", "pid": scraper_process.pid}
+@app.get("/status")
+def get_status(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    user_id = current_user.id
+    
+    job = db.query(models.ScrapingJob).filter(
+        models.ScrapingJob.owner_id == user_id
+    ).order_by(models.ScrapingJob.created_at.desc()).first()
+    
+    if job and job.status == "running":
+        if psutil.pid_exists(job.pid):
+             return {"status": "running", "pid": job.pid, "job_id": job.id}
+        else:
+             # Auto-update status if process died silently
+             job.status = "completed"
+             db.commit()
+             
     return {"status": "stopped"}
 
 @app.get("/logs")
-def get_logs():
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r") as f:
+def get_logs(current_user: models.User = Depends(get_current_user)):
+    user_id = current_user.id
+    log_file = f"logs/scraper_{user_id}.log"
+    
+    if os.path.exists(log_file):
+        with open(log_file, "r") as f:
             # Read last 100 lines for efficiency
             lines = f.readlines()
             return {"logs": "".join(lines[-100:])}
@@ -181,8 +263,8 @@ def get_logs():
 
 # --- Evolution API Integration ---
 
-EVOLUTION_URL = "http://localhost:8081"
-EVOLUTION_API_KEY = "velora123"
+EVOLUTION_URL = os.getenv("EVOLUTION_URL", "http://localhost:8081")
+EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "velora123")
 
 def get_evolution_headers():
     return {
@@ -379,35 +461,19 @@ def logout_whatsapp(session_name: str = Body(..., embed=True), current_user: mod
         return {"status": "success"}
     except Exception as e:
          return {"status": "error", "detail": str(e)}
-    """Logout/Delete Session"""
-    base_url = get_waha_url()
-    if not session_name.startswith(f"u{current_user.id}_"):
-         raise HTTPException(status_code=403, detail="Access denied")
-         
-    try:
-        headers = {"X-Api-Key": "velora123"}
-        # Logout ensures session is stopped
-        requests.post(f"{base_url}/api/sessions/{session_name}/auth/logout", headers=headers)
-        # Then delete
-        res = requests.delete(f"{base_url}/api/sessions/{session_name}", headers=headers)
-        return res.json()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/results")
-def get_results():
-    """List all result folders and their CSV contents brief"""
-    data_dir = "."
+def get_results(current_user: models.User = Depends(get_current_user)):
+    """List all result folders and their CSV contents for the current user"""
+    user_id = current_user.id
+    data_dir = f"results/{user_id}"
     results = []
     
     try:
         if os.path.exists(data_dir):
             folders = [f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f)) and not f.startswith(".")]
             for folder in folders:
-                folder_path = os.path.join(data_dir, folder)
-                if folder == "Scraping Tools-BE" or folder == "Scraping Tools-FE" or folder == ".venv":
-                     continue
-                     
+                folder_path = os.path.join(data_dir, folder)     
                 files = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
                 for file in files:
                     results.append({
@@ -419,6 +485,30 @@ def get_results():
         print(f"Error listing results: {e}")
         
     return {"results": results}
+
+@app.get("/results/content")
+def get_result_content(path: str, current_user: models.User = Depends(get_current_user)):
+    """Read content of a result CSV file safely"""
+    user_id = current_user.id
+    
+    # Path Traversal Protection
+    # Ensure path starts with results/{user_id}/ and contains no ..
+    safe_base = os.path.abspath(f"results/{user_id}")
+    requested_path = os.path.abspath(path)
+    
+    if not requested_path.startswith(safe_base):
+        raise HTTPException(status_code=403, detail="Access denied: Invalid file path")
+        
+    if not os.path.exists(requested_path) or not requested_path.endswith(".csv"):
+         raise HTTPException(status_code=404, detail="File not found or invalid format")
+         
+    try:
+        df = pd.read_csv(requested_path)
+        # return first 50 rows preview + columns
+        preview = df.head(50).fillna("").to_dict(orient="records")
+        return {"columns": list(df.columns), "data": preview, "total_rows": len(df)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
 # --- Phase 4 & 5: OCR and Master Data ---
 
@@ -758,94 +848,6 @@ def delete_template(template_id: int, db: Session = Depends(get_db), current_use
 
 # --- WhatsApp Connection Helper ---
 
-# --- WAHA (WhatsApp HTTP API) Integration ---
-
-WAHA_BASE_URL = "http://localhost:3001"
-
-def start_waha_session(session_name="default"):
-    """Ensures a WAHA session is started"""
-    try:
-        # Check if session exists first
-        res = requests.get(f"{WAHA_BASE_URL}/api/sessions/{session_name}")
-        if res.status_code == 200:
-            return True
-        
-        # Start session if not exists
-        payload = {"name": session_name, "config": {"proxy": None}}
-        res = requests.post(f"{WAHA_BASE_URL}/api/sessions", json=payload)
-        return res.status_code in [200, 201]
-    except Exception as e:
-        print(f"WAHA Error: {e}")
-        return False
-
-@app.get("/whatsapp/sessions")
-def list_waha_sessions():
-    """List all active WAHA sessions"""
-    try:
-        res = requests.get(f"{WAHA_BASE_URL}/api/sessions?all=true")
-        if res.status_code == 200:
-            return res.json()
-        return []
-    except Exception as e:
-        print(f"WAHA List Error: {e}")
-        return []
-
-@app.post("/whatsapp/login")
-def login_whatsapp(session_name: str = "default", background_tasks: BackgroundTasks = None):
-    """Starts the WAHA session so it's ready for QR scanning"""
-    # We trigger the session start in background to ensure container is ready
-    def _start():
-        success = start_waha_session(session_name)
-        if not success:
-            print(f"Failed to start WAHA session: {session_name}")
-    
-    if background_tasks:
-        background_tasks.add_task(_start)
-    else:
-        # Fallback if called directly without bg tasks (rare)
-        threading.Thread(target=_start).start()
-        
-    return {"status": "success", "message": f"Initializing WAHA Session '{session_name}'..."}
-
-@app.delete("/whatsapp/session/{session_name}")
-def delete_session(session_name: str):
-    """Stops/Deletes a session (Logout)"""
-    try:
-        res = requests.post(f"{WAHA_BASE_URL}/api/sessions/{session_name}/logout")
-        # Also try to delete if logout isn't enough
-        requests.delete(f"{WAHA_BASE_URL}/api/sessions/{session_name}")
-        return {"status": "success", "message": f"Session {session_name} deleted"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/whatsapp/qr-image")
-def get_qr_image(session: str = "default"):
-    """Proxies the QR code image from WAHA for a specific session"""
-    try:
-        # WAHA Screenshot endpoint
-        url = f"{WAHA_BASE_URL}/api/screenshot?session={session}"
-        res = requests.get(url)
-        if res.status_code == 200:
-            return Response(content=res.content, media_type="image/png")
-        return {"status": "error", "message": "QR Code not available (maybe connected?)"}
-    except Exception as e:
-        return {"status": "error", "message": f"WAHA Fetch Error: {str(e)}"}
-
-@app.get("/whatsapp/status")
-def get_wa_status(session: str = "default"):
-    """Checks connection status for a specific session"""
-    try:
-        res = requests.get(f"{WAHA_BASE_URL}/api/sessions/{session}")
-        if res.status_code == 200:
-            data = res.json()
-            # WAHA returns { "name": "default", "status": "WORKING" | "SCANNING" | "STOPPED" }
-            return {"status": data.get("status", "UNKNOWN").lower()} 
-        return {"status": "stopped"}
-    except:
-        return {"status": "error"}
-
-
-
 # --- Broadcast Logic (Evolution API + Anti-Detection) ---
 
 import threading
@@ -857,6 +859,7 @@ broadcast_state = {
     "total": 0,
     "sent": 0,
     "failed": 0,
+    "progress": 0,     # 0-100 percentage
     "current_phone": "",
     "current_delay": 0,
     "logs": [],
@@ -972,6 +975,7 @@ def broadcast_worker(owner_id: int, leads: List[dict], template_content: str, mi
     broadcast_state["total"] = len(leads)
     broadcast_state["sent"] = 0
     broadcast_state["failed"] = 0
+    broadcast_state["progress"] = 0
     broadcast_state["logs"] = []
     broadcast_state["session_used"] = session_name
     
@@ -1036,6 +1040,10 @@ def broadcast_worker(owner_id: int, leads: List[dict], template_content: str, mi
                 error_msg = result.get("error", "Unknown")[:50]
                 broadcast_state["logs"].append(f"❌ Failed {phone}: {error_msg}")
             
+            # Update progress percentage
+            processed = i + 1
+            broadcast_state["progress"] = int((processed / len(leads)) * 100)
+            
             # Cooldown check
             if messages_since_cooldown >= config["cooldown_every_n_messages"]:
                 cooldown = random.uniform(
@@ -1081,6 +1089,7 @@ def broadcast_worker(owner_id: int, leads: List[dict], template_content: str, mi
     finally:
         if not broadcast_stop_event.is_set():
             broadcast_state["status"] = "finished"
+            broadcast_state["progress"] = 100
             broadcast_state["logs"].append(f"🏁 Done! Sent: {broadcast_state['sent']}, Failed: {broadcast_state['failed']}")
         db.close()
 
@@ -1091,6 +1100,40 @@ class BroadcastRequest(BaseModel):
     max_delay: int = 45
     rotate: bool = False
     session_name: str = ""  # Optional: specific session to use
+
+class TestBroadcastRequest(BaseModel):
+    phone: str
+    message: str
+    session_name: str = "" # Optional
+
+@app.post("/broadcast/test")
+def start_test_broadcast(
+    req: TestBroadcastRequest, 
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Send a single test message to a specific number"""
+    
+    # Cleaning phone number
+    clean_number = clean_master_phones.clean_phone(req.phone)
+    if not clean_number:
+        raise HTTPException(status_code=400, detail="Invalid phone number format")
+        
+    session_name = req.session_name
+    if not session_name:
+        # Auto-select session
+        sessions = get_user_evolution_session(db, current_user.id)
+        if not sessions:
+            raise HTTPException(status_code=400, detail="No connected WhatsApp session found")
+        session_name = sessions[0]
+        
+    # Send message
+    result = send_message_via_evolution(session_name, clean_number, req.message)
+    
+    if result["success"]:
+        return {"status": "success", "message": f"Test message sent to {clean_number}"}
+    else:
+        return {"status": "error", "message": result.get("error", "Unknown error")}
 
 @app.post("/broadcast/start")
 def start_broadcast(
@@ -1154,17 +1197,60 @@ def start_broadcast(
     }
 
 @app.post("/broadcast/stop")
-def stop_broadcast():
+def stop_broadcast(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     global broadcast_stop_event
     broadcast_stop_event.set()
+    
+    # Validasi dan update status di DB
+    campaign = db.query(models.BroadcastCampaign).filter(
+        models.BroadcastCampaign.owner_id == current_user.id,
+        models.BroadcastCampaign.status == "running"
+    ).first()
+    
+    if campaign:
+        campaign.status = "stopped"
+        db.commit()
+        
     return {"status": "success", "message": "Stopping broadcast..."}
 
 @app.get("/broadcast/status")
-def get_broadcast_status():
-    global broadcast_state
+def get_broadcast_status(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Find latest campaign
+    campaign = db.query(models.BroadcastCampaign).filter(
+        models.BroadcastCampaign.owner_id == current_user.id
+    ).order_by(models.BroadcastCampaign.created_at.desc()).first()
+    
+    if not campaign:
+        return {"status": "idle", "total": 0, "sent": 0, "failed": 0, "progress": 0, "logs": [], "session_used": ""}
+        
+    # Get recent logs
+    logs = db.query(models.BroadcastLog).filter(
+        models.BroadcastLog.campaign_id == campaign.id
+    ).order_by(models.BroadcastLog.id.desc()).limit(20).all()
+    
+    formatted_logs = []
+    for log in reversed(logs):
+        icon = "✅" if log.status == "sent" else "❌" if log.status == "failed" else "⏳"
+        msg = f"{icon} {log.phone}"
+        if log.error_message:
+             msg += f": {log.error_message}"
+        formatted_logs.append(msg)
+        
+    # Calculate progress
+    progress = 0
+    if campaign.total_recipients > 0:
+        progress = int(((campaign.success_count + campaign.failed_count) / campaign.total_recipients) * 100)
+    elif campaign.status == "completed":
+        progress = 100
+        
     return {
-        **broadcast_state, 
-        "logs": broadcast_state["logs"][-15:]  # Last 15 logs
+        "status": campaign.status,
+        "total": campaign.total_recipients,
+        "sent": campaign.success_count,
+        "failed": campaign.failed_count,
+        "progress": progress,
+        "logs": formatted_logs,
+        "session_used": campaign.session_used or ""
     }
 
 # ... (Rest remains same)
@@ -1177,13 +1263,14 @@ def telegram_listener():
     while True:
         db = database.SessionLocal()
         try:
-            # Load config dynamically to get latest token
-            if os.path.exists(CONFIG_FILE):
+            # Load token from environment variable (highest priority)
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            
+            # Fallback to config file if not in env
+            if not token and os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, "r") as f:
                     config = json.load(f)
                     token = config.get("TELEGRAM_BOT_TOKEN")
-            else:
-                token = None
 
             if not token:
                 time.sleep(10)
@@ -1337,10 +1424,14 @@ async def upload_ocr_image(file: UploadFile = File(...), db: Session = Depends(g
              
         # Send to Telegram if Configured
         try:
-            with open(CONFIG_FILE, "r") as f:
-                config = json.load(f)
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            if not token and os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, "r") as f:
+                    config = json.load(f)
+                    token = config.get("TELEGRAM_BOT_TOKEN")
+            
             caption = f"✅ OCR Success (User: {current_user.email})!\nFound {count} numbers."
-            send_to_telegram(contents, caption, config)
+            send_to_telegram(contents, caption, {"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_CHAT_ID": os.getenv("TELEGRAM_CHAT_ID")})
         except: pass
             
         return {
@@ -1577,7 +1668,7 @@ def admin_delete_package(package_id: int, db: Session = Depends(get_db), current
     return {"message": f"Package '{package.name}' deleted successfully"}
 
 # --- Owner Account Constants ---
-OWNER_EMAIL = "nawawimahinutsman@gmail.com"
+OWNER_EMAIL = os.getenv("OWNER_EMAIL", "nawawimahinutsman@gmail.com")
 
 def is_owner_account(user: models.User) -> bool:
     """Check if user is the owner account (always active)"""

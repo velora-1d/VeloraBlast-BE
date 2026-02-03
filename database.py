@@ -1,17 +1,21 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Menggunakan PostgreSQL jika variabel lingkungan DATABASE_URL tersedia, jika tidak fallback ke SQLite
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./velora_blast.db")
+# Enforce PostgreSQL
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Pengaturan tambahan untuk SQLite
-connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
+if not SQLALCHEMY_DATABASE_URL:
+    raise ValueError("❌ DATABASE_URL is missing. PostgreSQL is required for production.")
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args=connect_args
-)
+if "sqlite" in SQLALCHEMY_DATABASE_URL:
+    raise ValueError("❌ SQLite is NOT allowed in this production environment. Please use PostgreSQL.")
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

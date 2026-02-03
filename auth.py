@@ -1,11 +1,15 @@
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from dotenv import load_dotenv
 
-# Secret key to sign JWT tokens - in production use an environment variable!
-SECRET_KEY = "velora_blast_super_secret_key_123"
-ALGORITHM = "HS256"
+load_dotenv()
+
+# Secret key to sign JWT tokens
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 1 week
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")

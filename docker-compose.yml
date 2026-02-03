@@ -39,6 +39,8 @@ services:
       - POSTGRES_USER=evolution
       - POSTGRES_PASSWORD=evolution
       - POSTGRES_DB=evolution
+    ports:
+      - "5432:5432"
     volumes:
       - evolution_pgdata:/var/lib/postgresql/data
 

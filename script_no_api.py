@@ -28,9 +28,18 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 
+import argparse
+
+# Parse arguments first to set up paths
+parser = argparse.ArgumentParser()
+parser.add_argument("--owner_id", type=str, default=None, help="Owner ID for isolation")
+parser.add_argument("--log_file", type=str, default="log_no_api.log", help="Path to log file")
+parser.add_argument("--output_dir", type=str, default=".", help="Directory for results")
+args, _ = parser.parse_known_args()
+
 # --- Configuration ---
-LOG_FILE = "log_no_api.log"
-OUTPUT_DIR = "."
+LOG_FILE = args.log_file
+OUTPUT_DIR = args.output_dir
 MAX_SCROLL_ATTEMPTS = 25
 SCROLL_PAUSE_MIN = 1.0
 SCROLL_PAUSE_MAX = 2.5
@@ -62,6 +71,11 @@ def setup_logging():
     
     # Clear existing handlers
     logger.handlers = []
+    
+    # Ensure directory exists for log file
+    log_dir = os.path.dirname(LOG_FILE)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
     
     file_handler = logging.FileHandler(LOG_FILE)
     file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
@@ -336,10 +350,13 @@ def save_results(results, search_phrase):
     df = pd.DataFrame(results)
     
     folder_name = search_phrase.lower().replace(" ", "_")[:50]
-    os.makedirs(folder_name, exist_ok=True)
+    
+    # Use global OUTPUT_DIR 
+    full_output_path = os.path.join(OUTPUT_DIR, folder_name)
+    os.makedirs(full_output_path, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(folder_name, f"results_{timestamp}.csv")
+    output_file = os.path.join(full_output_path, f"results_{timestamp}.csv")
     
     df.to_csv(output_file, index=False)
     logger.info(f"Saved {len(results)} results to: {output_file}")
@@ -347,7 +364,7 @@ def save_results(results, search_phrase):
     # Also save only with phones
     with_phones = df[df['phone'] != '']
     if len(with_phones) > 0:
-        phones_file = os.path.join(folder_name, f"phones_only_{timestamp}.csv")
+        phones_file = os.path.join(full_output_path, f"phones_only_{timestamp}.csv")
         with_phones.to_csv(phones_file, index=False)
         logger.info(f"Saved {len(with_phones)} with phones to: {phones_file}")
     
