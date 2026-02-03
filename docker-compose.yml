@@ -3,7 +3,7 @@ version: '3.3'
 services:
   evolution-api:
     container_name: evolution_api
-    image: attdevelopers/evolution-api:v2.1.2
+    image: atendai/evolution-api:latest
     restart: always
     ports:
       - "8081:8081"
@@ -30,6 +30,25 @@ services:
       - redis
     volumes:
       - evolution_instances:/evolution/instances
+
+  backend:
+    container_name: velora_backend
+    build: .
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://evolution:evolution@postgres:5432/velora_blast
+      - REDIS_URL=redis://redis:6379/0
+      - EVOLUTION_URL=http://evolution-api:8081
+    depends_on:
+      - postgres
+      - redis
+      - evolution-api
+    volumes:
+      - ./logs:/app/logs
+      - ./results:/app/results
+      - ./sessions:/app/sessions
 
   postgres:
     container_name: evolution_postgres
