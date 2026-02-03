@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+*.log
+*.csv
+*.json
+!env_parameters.json
+.vscode/
+.idea/
+outputs/
+*.bak
+*.tmp
+*.temp
+data/
+results/

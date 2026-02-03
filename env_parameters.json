@@ -1,0 +1,19 @@
+{
+    "GOOGLE_MAPS_API_KEY": "",
+    "GOOGLE_MAPS_LINK": "",
+    "RADIUS": 5000,
+    "MESSAGE_LIMIT": 10,
+    "search_phrase": "Coffee Shop Jakarta",
+    "WHATSAPP_PHONE_NUMBER": "",
+    "APPOINTMENT_DATE": "2023-10-27",
+    "APPOINTMENT_TIME": "10:00",
+    "CHROME_DRIVER_PATH": "/usr/bin/chromedriver",
+    "CHROME_USER_DATA_DIR": "/home/mahinutsmannawawi/.config/google-chrome",
+    "CHROME_PROFILE_NAME": "Default",
+    "country_code_file": "country_codes.csv",
+    "message_file": "prep_message.txt",
+    "TELEGRAM_BOT_TOKEN": "8399130715:AAFknc8FSB7w5EqEbsamy_noK1Tasoe5aqg",
+    "TELEGRAM_CHAT_ID": "7978715275",
+    "TELEGRAM_CHAT_ID_NOTIF": "-5223155974",
+    "WAHA_API_URL": "http://localhost:3001"
+}
