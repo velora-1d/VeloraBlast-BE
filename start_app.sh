@@ -2,7 +2,7 @@
 
 echo "🚀 Starting Velora Blast System..."
 
-# This script is located in velora-blast-backend
+# This script is located in VeloraBlast-BE
 # It starts the backend here and the frontend in the adjacent folder
 
 # Kill existing processes on ports 8000 (API) and 3000 (Frontend)
@@ -11,7 +11,7 @@ fuser -k 3000/tcp 2>/dev/null
 
 # Start Backend
 echo "🔹 Starting Backend (FastAPI)..."
-# We are already in velora-blast-backend
+# We are already in VeloraBlast-BE
 uvicorn api:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 echo "   PID: $BACKEND_PID"
@@ -21,14 +21,14 @@ sleep 2
 
 # Start Frontend (assuming it is in the adjacent folder)
 echo "🔹 Starting Frontend (Next.js)..."
-if [ -d "../velora-blast-frontend" ]; then
-    cd "../velora-blast-frontend"
+if [ -d "../VeloraBlast-FE" ]; then
+    cd "../VeloraBlast-FE"
     npm run dev -- -p 3000 &
     FRONTEND_PID=$!
     echo "   PID: $FRONTEND_PID"
     cd - > /dev/null
 else
-    echo "⚠️  Frontend folder not found at ../velora-blast-frontend"
+    echo "⚠️  Frontend folder not found at ../VeloraBlast-FE"
 fi
 
 echo "✅ App is running!"
