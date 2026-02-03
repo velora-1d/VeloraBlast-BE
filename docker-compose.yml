@@ -1,0 +1,56 @@
+version: '3.3'
+
+services:
+  evolution-api:
+    container_name: evolution_api
+    image: attdevelopers/evolution-api:v2.1.2
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      - SERVER_PORT=8081
+      - SERVER_URL=http://localhost:8081
+      - DOCKER_ENV=true
+      - AUTHENTICATION_API_KEY=velora123
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - DATABASE_ENABLED=true
+      - DATABASE_CONNECTION_URI=postgresql://evolution:evolution@postgres:5432/evolution
+      - DATABASE_CLIENT_NAME=evolution_exchange
+      - RABBITMQ_ENABLED=false
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379/0
+      - CACHE_REDIS_PREFIX=evolution
+      - WEBSOCKET_ENABLED=true
+      - STORE_MESSAGES=false
+      - STORE_MESSAGE_UP=false
+      - STORE_CONTACTS=false
+      - STORE_CHATS=false
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - evolution_instances:/evolution/instances
+
+  postgres:
+    container_name: evolution_postgres
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=evolution
+      - POSTGRES_PASSWORD=evolution
+      - POSTGRES_DB=evolution
+    volumes:
+      - evolution_pgdata:/var/lib/postgresql/data
+
+  redis:
+    container_name: evolution_redis
+    image: redis:alpine
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - evolution_redisdata:/data
+
+volumes:
+  evolution_instances:
+  evolution_pgdata:
+  evolution_redisdata:
